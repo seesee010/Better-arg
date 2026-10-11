@@ -188,6 +188,10 @@ jobs:
                 --markdown coverage.md
           cat coverage.txt
           cat coverage.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Coverage gate (SDD NFR-10)
+        run: >
+          gcovr --root . --filter src/ build
+          --fail-under-line 95 --fail-under-branch 90
 
   style:
     name: Coding style
