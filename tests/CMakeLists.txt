@@ -17,3 +17,8 @@ foreach(src IN LISTS ARG_UNIT_TESTS)
     add_test(NAME ${name} COMMAND ${name})
     set_tests_properties(${name} PROPERTIES LABELS unit TIMEOUT 60)
 endforeach()
+
+# End-to-end tests run the example programs.
+if(ARG_BUILD_EXAMPLES)
+    add_subdirectory(e2e)
+endif()
