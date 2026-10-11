@@ -236,6 +236,18 @@ static void jump_exit(void *ud, int code)
 	longjmp(l->jb, 1);
 }
 
+/* realloc-style hook that counts live blocks */
+static void *count_alloc(void *ud, void *ptr, size_t old, size_t size)
+{
+	int *live = ud;
+
+	if (ptr == NULL && size)
+		++*live;
+	else if (ptr && size == 0)
+		--*live;
+	return arg_alloc_stdlib(NULL, ptr, old, size);
+}
+
 static void no_exit(void *ud, int code)
 {
 	struct log *l = ud;
@@ -277,6 +289,28 @@ TEST(exit_on_error)
 		reached = 1;
 	}
 	CHECK(reached);
+	/* alloc-hook blocks are released before the exit hook runs */
+	{
+		static unsigned char tiny[8];
+		int live = 0;
+
+		f.cfg.arena = tiny;
+		f.cfg.arena_cap = sizeof(tiny);
+		f.cfg.alloc = count_alloc;
+		f.cfg.alloc_ud = &live;
+		arg__init(&f.p, app, &f.cfg, 1);
+		reached = 0;
+		if (setjmp(l.jb) == 0) {
+			PARSE(&f, "--bogus");
+			reached = 1;
+		}
+		CHECK(!reached);
+		CHECK_INT(l.exit_code, 2);
+		CHECK_INT(live, 0);
+		f.cfg.arena = NULL;
+		f.cfg.arena_cap = 0;
+		f.cfg.alloc = NULL;
+	}
 	/* an exit hook that returns: the status comes back */
 	f.cfg.exit = no_exit;
 	arg__init(&f.p, app, &f.cfg, 1);

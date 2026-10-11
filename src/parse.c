@@ -1088,6 +1088,8 @@ arg_status arg_parse(arg *p, int argc, char *const *argv)
 	v->err.status = st;
 	if (st != ARG_OK && v->exit_on_error) {
 		code = arg_report(p);
+		/* release alloc-hook blocks even if the exit hook returns */
+		arg_free(p);
 		if (v->cfg.exit)
 			v->cfg.exit(v->cfg.exit_ud, code);
 	}
