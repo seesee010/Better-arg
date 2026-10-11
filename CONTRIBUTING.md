@@ -26,6 +26,7 @@ The essentials:
 | Naming | `lower_snake_case`. Public symbols use the `arg_` / `ARG_` prefix; private cross-file symbols use `arg__`. |
 | Functions | Short, doing one thing. Use `goto` for central cleanup. |
 | Comments | `/* C89 style */` only, explaining *what* and *why*, not *how*. |
+| License tag | First line `// SPDX-License-Identifier: GPL-2.0-only` in `.c` files, `/* ... */` in headers, as in the kernel. |
 | Macros | Multi-statement macros in `do { } while (0)`; uppercase names. |
 
 ### Deliberate deviations from the kernel style
@@ -60,6 +61,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 With sanitizers: add `-DARG_SANITIZE=ON`. With coverage: `-DARG_COVERAGE=ON`.
+Mechanical style checks: `./scripts/check-style.sh`.
 
 Every change needs unit tests in `tests/unit/test_<module>.c`. New test
 files are picked up automatically.

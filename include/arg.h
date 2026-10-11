@@ -641,7 +641,7 @@ typedef enum arg_msg_id {
 	ARG_MSG_SPEC,               /* "invalid specification: %s"        */
 	ARG_MSG_ACTION,             /* "%s"                               */
 	ARG_MSG_DID_YOU_MEAN,       /* "Did you mean '%s'?"               */
-	ARG_MSG_TRY_HELP,           /* "Try '%s --help' for more information." */
+	ARG_MSG_TRY_HELP,           /* "Try '%s --help' for more ..."     */
 	ARG_MSG_USAGE,              /* "Usage:"                           */
 	ARG_MSG_ARGUMENTS,          /* "Arguments:"                       */
 	ARG_MSG_OPTIONS,            /* "Options:"                         */
@@ -760,7 +760,8 @@ struct arg_parser {
  */
 void arg__init(arg *p, const arg_item *items, const arg_config *cfg,
 	       int exit_on_error);
-#define arg_init(p, items, cfg) arg__init((p), (items), (cfg), ARG_EXIT_ON_ERROR)
+#define arg_init(p, items, cfg)                                              \
+	arg__init((p), (items), (cfg), ARG_EXIT_ON_ERROR)
 
 /* Parse argv; argv is never modified. */
 arg_status arg_parse(arg *p, int argc, char *const *argv);
