@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: ${{ matrix.os }} / ${{ matrix.cc }} / ${{ matrix.build_type }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        cc: [gcc, clang]
+        build_type: [Debug, Release]
+        exclude:
+          # gcc on macOS is an alias for Apple Clang
+          - os: macos-latest
+            cc: gcc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_C_COMPILER=${{ matrix.cc }}
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DARG_WERROR=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+      - name: Install
+        run: cmake --install build --prefix "$RUNNER_TEMP/prefix"
+
+  sanitizers:
+    name: ASan + UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_BUILD_TYPE=Debug
+          -DARG_WERROR=ON
+          -DARG_SANITIZE=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Unit tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build --output-on-failure
+
+  strict-c99:
+    name: Strict C99 (${{ matrix.std }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        std: [c99, c11, c17]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Public header compiles under -std=${{ matrix.std }} -pedantic-errors
+        run: |
+          printf '#include "arg.h"\nint main(void) { return arg_version() == 0; }\n' > hdr.c
+          for cc in gcc clang; do
+            $cc -std=${{ matrix.std }} -pedantic-errors -Wall -Wextra -Werror \
+                -Iinclude -c hdr.c -o hdr.o
+          done
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install gcovr
+        run: pipx install gcovr
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_C_COMPILER=gcc
+          -DCMAKE_BUILD_TYPE=Debug
+          -DARG_COVERAGE=ON
+      - name: Build and test
+        run: |
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+      - name: Report
+        run: |
+          gcovr --root . --filter src/ build \
+                --print-summary --txt coverage.txt \
+                --markdown coverage.md
+          cat coverage.txt
+          cat coverage.md >> "$GITHUB_STEP_SUMMARY"
+
+  style:
+    name: Coding style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux kernel style checks
+        run: ./scripts/check-style.sh
