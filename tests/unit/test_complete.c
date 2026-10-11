@@ -1,0 +1,855 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * test_complete.c - shell completion scripts (complete.c)
+ *
+ * When the environment variable ARG_COMPLETION_OUT_DIR is set, the
+ * scripts for the rich spec are also written to bash.sh, zsh.zsh and
+ * fish.fish in that directory, so that CI can run the real shells on
+ * them (syntax check and simulated completions).
+ */
+#include <stdlib.h>
+
+#include "arg_internal.h"
+#include "test.h"
+
+/* ------------------------------------------------------------------ */
+/* Fixtures                                                           */
+/* ------------------------------------------------------------------ */
+
+struct out {
+	char data[65536];
+	size_t len;
+	size_t limit; /* fail writes past this many bytes, 0 = never */
+	unsigned calls;
+};
+
+static int out_write(void *ud, const char *s, size_t n)
+{
+	struct out *o = ud;
+
+	o->calls++;
+	if (o->limit && o->len + n > o->limit)
+		return 42;
+	if (n >= sizeof(o->data) - o->len)
+		return -1;
+	memcpy(o->data + o->len, s, n);
+	o->len += n;
+	o->data[o->len] = '\0';
+	return 0;
+}
+
+static int str_parse(const arg_type *t, const char *s, size_t n, void *dst,
+		     arg_ctx *ctx)
+{
+	(void)t;
+	(void)n;
+	(void)ctx;
+	memcpy(dst, &s, sizeof(s));
+	return 0;
+}
+
+static int run_ok(arg *a)
+{
+	(void)a;
+	return 0;
+}
+
+static int on_def(arg *a, const char *v)
+{
+	(void)a;
+	(void)v;
+	return 0;
+}
+
+#define STR_TYPE(name_, hints_)                                              \
+	{ .name = (name_), .size = sizeof(const char *), .parse = str_parse, \
+	  .hints = (hints_), .kind = ARG_K_STR }
+
+static const arg_type t_dir = STR_TYPE("DIR", ARG_HINT_DIR);
+static const arg_type t_file = STR_TYPE("FILE", ARG_HINT_FILE);
+static const arg_type t_host = STR_TYPE("HOST", ARG_HINT_HOST);
+static const arg_type t_user = STR_TYPE("USER", ARG_HINT_USER);
+static const arg_type t_nonempty_dir = {
+	.name = "D", .size = sizeof(const char *), .parse = arg_nonempty_parse,
+	.ud = &(const arg_wrap){ .inner = &t_dir }, .kind = ARG_K_STR
+};
+static const arg_type t_broken_wrap = {
+	.name = "W", .size = sizeof(const char *), .parse = arg_maxlen_parse,
+	.ud = &(const arg_wrap){ .inner = NULL }, .kind = ARG_K_STR
+};
+
+static const arg_item no_items[] = { { .kind = ARG_I_END } };
+
+ARG_DEFINE(shared_opts,
+	   ARG_FLAG('q', "quiet", "Say less"));
+
+static const arg_item rich[] = {
+	ARG_APP("pkg", "Package tool",
+		ARG_COUNT('v', "verbose", "Be verbose", .global = 1),
+		ARG_FLAG(0, "color", "Use color", .negatable = 1),
+		ARG_STR('C', "config", "Config file"),
+		ARG_CUSTOM(0, "workdir", &t_dir, "Work directory",
+			   .alias = "wd"),
+		ARG_ENUM('f', "format", "Output format: 'json' or 'yaml'",
+			 ARG_CHOICES("json", "yaml", "x y")),
+		ARG_INT('j', "jobs", "Parallel jobs\nsecond line"),
+		ARG_CUSTOM(0, "when", ARG_ONE_OF_STR("now", "later"), "When",
+			   .optional_value = 1),
+		ARG_STR(0, "secret", "Hidden option", .hidden = 1),
+		ARG_ON('D', "define", on_def, "Define a macro",
+		       .value = "KEY=VAL"),
+		ARG_USE(shared_opts),
+		ARG_CMD("repo", NULL, "Manage repositories",
+			ARG_ALIAS("r"),
+			ARG_CMD("add", run_ok, "Add a repository",
+				ARG_CUSTOM('H', "host", &t_host, "Mirror host"),
+				ARG_ARG("name", "Repository name",
+					.type = &arg_t_enum,
+					.names = ARG_CHOICES("main", "extra")),
+				ARG_ARG("url", "Repository URL",
+					.type = &arg_t_i64)),
+			ARG_CMD("list", run_ok, "List repositories",
+				ARG_ALIAS("ls"),
+				ARG_FLAG('a', "all", "Show all")),
+			{ .kind = ARG_I_CMD, .name = "nuke", .hidden = 1,
+			  .help = "Hidden command", .fn.run = run_ok,
+			  .items = no_items }),
+		ARG_CMD("install", run_ok, "Install packages",
+			ARG_STR('o', "output", "Output file"),
+			ARG_CUSTOM('u', "user", &t_user, "Owner"),
+			ARG_ARGS("pkg", "Packages", .type = &t_file)),
+		ARG_CMD("build", run_ok, "Build in a directory",
+			ARG_ARG("dir", "Directory", .type = &t_nonempty_dir),
+			ARG_ARGS_OPT("files", "Files")),
+		ARG_CMD("bad name", run_ok, "Unsafe, skipped"))
+};
+
+static const arg_config rich_cfg = { .version = ARG_CONFIG_VERSION,
+				     .version_text = "pkg 1.0\n" };
+
+static int gen(const arg_item *spec, const arg_config *cfg, unsigned sh,
+	       struct out *o)
+{
+	arg p;
+
+	memset(o, 0, sizeof(*o));
+	arg_init(&p, spec, cfg);
+	return arg_completion(&p, sh, out_write, o);
+}
+
+static inline bool has(const struct out *o, const char *s)
+{
+	return strstr(o->data, s) != NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/* Golden scripts for a small spec                                    */
+/* ------------------------------------------------------------------ */
+
+static const arg_item small[] = {
+	ARG_APP("my-app", "Small",
+		ARG_FLAG('n', "dry-run", "Don't act"),
+		ARG_ENUM('m', "mode", "Mode", ARG_CHOICES("a", "b")),
+		ARG_CMD("go", run_ok, "Go somewhere",
+			ARG_ALIAS("g"),
+			ARG_ARG("where", "Target")))
+};
+
+static const char small_bash[] =
+	"# bash completion for my-app\n"
+	"# Generated by Better-arg; do not edit.\n"
+	"\n"
+	"# _my_app_act ACTION WORD: add the candidates of ACTION that match "
+	"WORD\n"
+	"_my_app_act()\n"
+	"{\n"
+	"\tlocal l a\n"
+	"\tcase \"$1\" in\n"
+	"\tf) a=(-f) ;;\n"
+	"\td) a=(-d) ;;\n"
+	"\th) a=(-A hostname) ;;\n"
+	"\tu) a=(-u) ;;\n"
+	"\tw:*) a=(-W \"${1#w:}\") ;;\n"
+	"\t*) return 0 ;;\n"
+	"\tesac\n"
+	"\tcase \"$1\" in\n"
+	"\tf | d) compopt -o filenames 2>/dev/null ;;\n"
+	"\tesac\n"
+	"\twhile IFS= read -r l; do\n"
+	"\t\tCOMPREPLY+=(\"$l\")\n"
+	"\tdone < <(compgen \"${a[@]}\" -- \"$2\")\n"
+	"}\n"
+	"\n"
+	"# _my_app_vact NODE OPTION: set va to the value action of OPTION\n"
+	"# (empty: no value, leading '=': optional attached value)\n"
+	"_my_app_vact()\n"
+	"{\n"
+	"\tcase \"$1:$2\" in\n"
+	"\t'0:-m' | '0:--mode') va='w:a b' ;;\n"
+	"\t*) va= ;;\n"
+	"\tesac\n"
+	"}\n"
+	"\n"
+	"# _my_app_pact NODE N: set va to the action of the next positional\n"
+	"_my_app_pact()\n"
+	"{\n"
+	"\tcase \"$1:$2\" in\n"
+	"\t'1:0') va='f' ;;\n"
+	"\t*) va= ;;\n"
+	"\tesac\n"
+	"}\n"
+	"\n"
+	"# _my_app_node NODE: set opts and subs\n"
+	"_my_app_node()\n"
+	"{\n"
+	"\tcase \"$1\" in\n"
+	"\t0)\n"
+	"\t\topts='-n --dry-run -m --mode -h --help'\n"
+	"\t\tsubs='go g'\n"
+	"\t\t;;\n"
+	"\t1)\n"
+	"\t\topts='-h --help'\n"
+	"\t\tsubs=''\n"
+	"\t\t;;\n"
+	"\tesac\n"
+	"}\n"
+	"\n"
+	"_my_app()\n"
+	"{\n"
+	"\tlocal cur=\"${COMP_WORDS[COMP_CWORD]}\" s=0 np=0 dd=0 skip=0\n"
+	"\tlocal i j w vo va opts subs\n"
+	"\tCOMPREPLY=()\n"
+	"\tfor ((i = 1; i < COMP_CWORD; i++)); do\n"
+	"\t\tw=\"${COMP_WORDS[i]}\"\n"
+	"\t\tif ((skip)); then\n"
+	"\t\t\t# \"--opt=value\" split at '=' by COMP_WORDBREAKS\n"
+	"\t\t\t[[ $w == = && $vo == --* ]] || skip=0\n"
+	"\t\t\tcontinue\n"
+	"\t\tfi\n"
+	"\t\tif ((!dd)); then\n"
+	"\t\t\tcase \"$w\" in\n"
+	"\t\t\t--)\n"
+	"\t\t\t\tdd=1\n"
+	"\t\t\t\tcontinue\n"
+	"\t\t\t\t;;\n"
+	"\t\t\t--*=*)\n"
+	"\t\t\t\tcontinue\n"
+	"\t\t\t\t;;\n"
+	"\t\t\t--*)\n"
+	"\t\t\t\t_my_app_vact \"$s\" \"$w\"\n"
+	"\t\t\t\t[[ -n $va && $va != =* ]] && skip=1 vo=\"$w\"\n"
+	"\t\t\t\tcontinue\n"
+	"\t\t\t\t;;\n"
+	"\t\t\t-?*)\n"
+	"\t\t\t\tfor ((j = 1; j < ${#w}; j++)); do\n"
+	"\t\t\t\t\t_my_app_vact \"$s\" \"-${w:j:1}\"\n"
+	"\t\t\t\t\t[[ -n $va ]] || continue\n"
+	"\t\t\t\t\tif [[ $va != =* ]] && ((j == ${#w} - 1)); then\n"
+	"\t\t\t\t\t\tskip=1 vo=\"-${w:j:1}\"\n"
+	"\t\t\t\t\tfi\n"
+	"\t\t\t\t\tbreak\n"
+	"\t\t\t\tdone\n"
+	"\t\t\t\tcontinue\n"
+	"\t\t\t\t;;\n"
+	"\t\t\tesac\n"
+	"\t\tfi\n"
+	"\t\tif ((np == 0)); then\n"
+	"\t\t\tcase \"$s:$w\" in\n"
+	"\t\t\t'0:go' | '0:g')\n"
+	"\t\t\t\ts=1\n"
+	"\t\t\t\tcontinue\n"
+	"\t\t\t\t;;\n"
+	"\t\t\tesac\n"
+	"\t\tfi\n"
+	"\t\tnp=$((np + 1))\n"
+	"\tdone\n"
+	"\tif ((skip)); then\n"
+	"\t\t[[ $cur == = ]] && cur=\n"
+	"\t\t_my_app_vact \"$s\" \"$vo\"\n"
+	"\t\t_my_app_act \"$va\" \"$cur\"\n"
+	"\t\treturn 0\n"
+	"\tfi\n"
+	"\tif ((!dd)); then\n"
+	"\t\tcase \"$cur\" in\n"
+	"\t\t--*=*)\n"
+	"\t\t\t_my_app_vact \"$s\" \"${cur%%=*}\"\n"
+	"\t\t\t_my_app_act \"${va#=}\" \"${cur#*=}\"\n"
+	"\t\t\tCOMPREPLY=(\"${COMPREPLY[@]/#/${cur%%=*}=}\")\n"
+	"\t\t\treturn 0\n"
+	"\t\t\t;;\n"
+	"\t\t-*)\n"
+	"\t\t\t_my_app_node \"$s\"\n"
+	"\t\t\t_my_app_act \"w:$opts\" \"$cur\"\n"
+	"\t\t\treturn 0\n"
+	"\t\t\t;;\n"
+	"\t\tesac\n"
+	"\tfi\n"
+	"\t_my_app_node \"$s\"\n"
+	"\tif ((np == 0)); then\n"
+	"\t\t_my_app_act \"w:$subs\" \"$cur\"\n"
+	"\tfi\n"
+	"\t_my_app_pact \"$s\" \"$np\"\n"
+	"\t_my_app_act \"$va\" \"$cur\"\n"
+	"\treturn 0\n"
+	"}\n"
+	"\n"
+	"complete -F _my_app 'my-app'\n";
+
+static const char small_zsh[] =
+	"#compdef my-app\n"
+	"# zsh completion for my-app\n"
+	"# Generated by Better-arg; do not edit.\n"
+	"\n"
+	"_my_app_0()\n"
+	"{\n"
+	"\tlocal curcontext=\"$curcontext\" state line ret=1\n"
+	"\ttypeset -A opt_args\n"
+	"\t_arguments -C -s -S \\\n"
+	"\t\t'(-n --dry-run)-n[Don'\\''t act]' \\\n"
+	"\t\t'(-n --dry-run)--dry-run[Don'\\''t act]' \\\n"
+	"\t\t'(-m --mode)-m+[Mode]:CHOICE:(a b)' \\\n"
+	"\t\t'(-m --mode)--mode=[Mode]:CHOICE:(a b)' \\\n"
+	"\t\t'(-h --help)-h[Print help]' \\\n"
+	"\t\t'(-h --help)--help[Print help]' \\\n"
+	"\t\t': :->cmd' \\\n"
+	"\t\t'*:: :->arg' && ret=0\n"
+	"\tcase $state in\n"
+	"\tcmd)\n"
+	"\t\tlocal -a cmds\n"
+	"\t\tcmds=(\n"
+	"\t\t\t'go:Go somewhere'\n"
+	"\t\t\t'g:Go somewhere'\n"
+	"\t\t)\n"
+	"\t\t_describe -t commands command cmds && ret=0\n"
+	"\t\t;;\n"
+	"\targ)\n"
+	"\t\tcase $line[1] in\n"
+	"\t\t'go' | 'g')\n"
+	"\t\t\t_my_app_1 && ret=0\n"
+	"\t\t\t;;\n"
+	"\t\tesac\n"
+	"\t\t;;\n"
+	"\tesac\n"
+	"\treturn ret\n"
+	"}\n"
+	"\n"
+	"_my_app_1()\n"
+	"{\n"
+	"\t_arguments -s -S \\\n"
+	"\t\t'(-h --help)-h[Print help]' \\\n"
+	"\t\t'(-h --help)--help[Print help]' \\\n"
+	"\t\t':where:_files'\n"
+	"}\n"
+	"\n"
+	"_my_app()\n"
+	"{\n"
+	"\t_my_app_0 \"$@\"\n"
+	"}\n"
+	"\n"
+	"if [ \"$funcstack[1]\" = \"_my_app\" ]; then\n"
+	"\t_my_app \"$@\"\n"
+	"else\n"
+	"\tcompdef _my_app 'my-app'\n"
+	"fi\n";
+
+static const char small_fish[] =
+	"# fish completion for my-app\n"
+	"# Generated by Better-arg; do not edit.\n"
+	"\n"
+	"# __my_app_vopt NODE OPTION: does OPTION take the next word as "
+	"value?\n"
+	"function __my_app_vopt\n"
+	"\tswitch \"$argv[1]:$argv[2]\"\n"
+	"\tcase '0:-m' '0:--mode'\n"
+	"\t\treturn 0\n"
+	"\tend\n"
+	"\treturn 1\n"
+	"end\n"
+	"\n"
+	"# __my_app_state: print the current node and the number of "
+	"positional\n"
+	"# words it has received\n"
+	"function __my_app_state\n"
+	"\tset -l w (commandline -opc)\n"
+	"\tset -q w[1]; and set -e w[1]\n"
+	"\tset -l s 0\n"
+	"\tset -l np 0\n"
+	"\tset -l skip 0\n"
+	"\tset -l dd 0\n"
+	"\tfor x in $w\n"
+	"\t\tif test $skip -eq 1\n"
+	"\t\t\tset skip 0\n"
+	"\t\t\tcontinue\n"
+	"\t\tend\n"
+	"\t\tif test $dd -eq 0\n"
+	"\t\t\tswitch \"_$x\"\n"
+	"\t\t\tcase '_--'\n"
+	"\t\t\t\tset dd 1\n"
+	"\t\t\t\tcontinue\n"
+	"\t\t\tcase '_--*=*'\n"
+	"\t\t\t\tcontinue\n"
+	"\t\t\tcase '_--*'\n"
+	"\t\t\t\t__my_app_vopt $s $x; and set skip 1\n"
+	"\t\t\t\tcontinue\n"
+	"\t\t\tcase '_-?*'\n"
+	"\t\t\t\tset -l c (string split '' -- (string sub -s 2 -- $x))\n"
+	"\t\t\t\tfor j in (seq (count $c))\n"
+	"\t\t\t\t\tif __my_app_vopt $s -$c[$j]\n"
+	"\t\t\t\t\t\ttest $j -eq (count $c); and set skip 1\n"
+	"\t\t\t\t\t\tbreak\n"
+	"\t\t\t\t\tend\n"
+	"\t\t\t\tend\n"
+	"\t\t\t\tcontinue\n"
+	"\t\t\tend\n"
+	"\t\tend\n"
+	"\t\tif test $np -eq 0\n"
+	"\t\t\tswitch \"$s:$x\"\n"
+	"\t\t\tcase '0:go' '0:g'\n"
+	"\t\t\t\tset s 1\n"
+	"\t\t\t\tcontinue\n"
+	"\t\t\tend\n"
+	"\t\tend\n"
+	"\t\tset np (math $np + 1)\n"
+	"\tend\n"
+	"\techo $s\n"
+	"\techo $np\n"
+	"end\n"
+	"\n"
+	"# __my_app_at NODE [MIN [MAX]]: is the cursor in NODE, after MIN to "
+	"MAX\n"
+	"# positional words?\n"
+	"function __my_app_at\n"
+	"\tset -l st (__my_app_state)\n"
+	"\ttest \"$st[1]\" = \"$argv[1]\"; or return 1\n"
+	"\tset -q argv[2]; or return 0\n"
+	"\ttest $st[2] -ge $argv[2]; or return 1\n"
+	"\tset -q argv[3]; or return 0\n"
+	"\ttest $st[2] -le $argv[3]\n"
+	"end\n"
+	"\n"
+	"# options, subcommands and arguments per node\n"
+	"complete -c 'my-app' -n '__my_app_at 0' -s 'n' -l 'dry-run' "
+	"-d 'Don\\'t act'\n"
+	"complete -c 'my-app' -n '__my_app_at 0' -s 'm' -l 'mode' "
+	"-x -a 'a b' -d 'Mode'\n"
+	"complete -c 'my-app' -n '__my_app_at 0' -s 'h' -l 'help' "
+	"-d 'Print help'\n"
+	"complete -c 'my-app' -n '__my_app_at 0 0 0' -a 'go' "
+	"-d 'Go somewhere'\n"
+	"complete -c 'my-app' -n '__my_app_at 0 0 0' -a 'g' "
+	"-d 'Go somewhere'\n"
+	"complete -c 'my-app' -n '__my_app_at 0 0' -f\n"
+	"\n"
+	"complete -c 'my-app' -n '__my_app_at 1' -s 'h' -l 'help' "
+	"-d 'Print help'\n"
+	"complete -c 'my-app' -n '__my_app_at 1 1' -f\n";
+
+TEST(golden_bash)
+{
+	struct out o;
+
+	CHECK_INT(gen(small, NULL, ARG_SH_BASH, &o), 0);
+	CHECK_STR(o.data, small_bash);
+}
+
+TEST(golden_zsh)
+{
+	struct out o;
+
+	CHECK_INT(gen(small, NULL, ARG_SH_ZSH, &o), 0);
+	CHECK_STR(o.data, small_zsh);
+}
+
+TEST(golden_fish)
+{
+	struct out o;
+
+	CHECK_INT(gen(small, NULL, ARG_SH_FISH, &o), 0);
+	CHECK_STR(o.data, small_fish);
+}
+
+/* ------------------------------------------------------------------ */
+/* Rich spec                                                          */
+/* ------------------------------------------------------------------ */
+
+TEST(rich_structure)
+{
+	struct out o;
+
+	/* bash: nodes, transitions with aliases, globals, values */
+	CHECK_INT(gen(rich, &rich_cfg, ARG_SH_BASH, &o), 0);
+	CHECK(has(&o, "complete -F _pkg 'pkg'\n"));
+	CHECK(has(&o, "'0:repo' | '0:r')\n\t\t\t\ts=1\n"));
+	CHECK(has(&o, "'1:add')\n\t\t\t\ts=2\n"));
+	CHECK(has(&o, "'1:list' | '1:ls')\n\t\t\t\ts=3\n"));
+	CHECK(has(&o, "'0:install')\n\t\t\t\ts=4\n"));
+	CHECK(has(&o, "'0:build')\n\t\t\t\ts=5\n"));
+	CHECK(has(&o, "subs='repo r install build'"));
+	CHECK(has(&o, "subs='add list ls'"));
+	CHECK(has(&o, "opts='-a --all -v --verbose -h --help -V --version'"));
+	CHECK(has(&o, "--color --no-color"));
+	CHECK(has(&o, "'0:-f' | '0:--format') va='w:json yaml' ;;"));
+	CHECK(has(&o, "'0:--workdir' | '0:--wd') va='d' ;;"));
+	CHECK(has(&o, "'0:-j' | '0:--jobs') va='n' ;;"));
+	CHECK(has(&o, "'0:--when') va='=w:now later' ;;"));
+	CHECK(has(&o, "'0:-D' | '0:--define') va='f' ;;"));
+	CHECK(has(&o, "'2:-H' | '2:--host') va='h' ;;"));
+	CHECK(has(&o, "'4:-u' | '4:--user') va='u' ;;"));
+	CHECK(has(&o, "'2:0') va='w:main extra' ;;"));
+	CHECK(!has(&o, "'2:1')"));
+	CHECK(has(&o, "'4:'*) va='f' ;;"));
+	CHECK(has(&o, "'5:0') va='d' ;;"));
+	CHECK(has(&o, "'5:'*) va='f' ;;"));
+	CHECK(has(&o, "-q --quiet"));
+
+	/* zsh */
+	CHECK_INT(gen(rich, &rich_cfg, ARG_SH_ZSH, &o), 0);
+	CHECK(has(&o, "#compdef pkg\n"));
+	CHECK(has(&o, "'*-v[Be verbose]'"));
+	CHECK(has(&o, "'(--color --no-color)--no-color[Use color]'"));
+	CHECK(has(&o, "'(-f --format)--format=[Output format\\: "
+		      "'\\''json'\\'' or '\\''yaml'\\'']:CHOICE:(json yaml)'"));
+	CHECK(has(&o, "'(--workdir --wd)--wd=[Work directory]:DIR:_files -/'"));
+	CHECK(has(&o, "'(--when)--when=-[When]::WORD:(now later)'"));
+	CHECK(has(&o, "'*-D+[Define a macro]:KEY=VAL:_files'"));
+	CHECK(has(&o, "'(-H --host)-H+[Mirror host]:HOST:_hosts'"));
+	CHECK(has(&o, "'(-u --user)--user=[Owner]:USER:_users'"));
+	CHECK(has(&o, "'(-j --jobs)--jobs=[Parallel jobs]:N: '"));
+	CHECK(has(&o, "'(-V --version)-V[Print version]'"));
+	CHECK(has(&o, "'repo:Manage repositories'"));
+	CHECK(has(&o, "'r:Manage repositories'"));
+	CHECK(has(&o, "'ls:List repositories'"));
+	CHECK(has(&o, "'repo' | 'r')\n\t\t\t_pkg_1 && ret=0"));
+	CHECK(has(&o, "'list' | 'ls')\n\t\t\t_pkg_3 && ret=0"));
+	CHECK(has(&o, "':name:(main extra)' \\\n\t\t':url: '\n"));
+	CHECK(has(&o, "'*:pkg:_files'\n"));
+	CHECK(has(&o, "':dir:_files -/' \\\n\t\t'*:files:_files'\n"));
+
+	/* fish */
+	CHECK_INT(gen(rich, &rich_cfg, ARG_SH_FISH, &o), 0);
+	CHECK(has(&o, "complete -c 'pkg' -n '__pkg_at 0' -l 'color' "
+		      "-d 'Use color'\n"));
+	CHECK(has(&o, "complete -c 'pkg' -n '__pkg_at 0' -l 'no-color' "
+		      "-d 'Use color'\n"));
+	CHECK(has(&o, "-s 'f' -l 'format' -x -a 'json yaml' "
+		      "-d 'Output format: \\'json\\' or \\'yaml\\''\n"));
+	CHECK(has(&o, "-l 'workdir' -x -a '(__fish_complete_directories)'"));
+	CHECK(has(&o, "-l 'wd' -x -a '(__fish_complete_directories)'"));
+	CHECK(has(&o, "-s 'j' -l 'jobs' -x -d 'Parallel jobs'\n"));
+	CHECK(has(&o, "-l 'when' -d 'When'\n"));
+	CHECK(has(&o, "-s 'C' -l 'config' -r -d 'Config file'\n"));
+	CHECK(has(&o, "-s 'H' -l 'host' -x -a '(__fish_print_hostnames)'"));
+	CHECK(has(&o, "-s 'u' -l 'user' -x -a '(__fish_complete_users)'"));
+	CHECK(has(&o, "complete -c 'pkg' -n '__pkg_at 3' -s 'v' "
+		      "-l 'verbose' -d 'Be verbose'\n"));
+	CHECK(has(&o, "complete -c 'pkg' -n '__pkg_at 0 0 0' -a 'r' "
+		      "-d 'Manage repositories'\n"));
+	CHECK(has(&o, "complete -c 'pkg' -n '__pkg_at 1 0 0' -a 'ls' "
+		      "-d 'List repositories'\n"));
+	CHECK(has(&o, "complete -c 'pkg' -n '__pkg_at 2 0 0' -f "
+		      "-a 'main extra'\n"));
+	CHECK(has(&o, "complete -c 'pkg' -n '__pkg_at 2 1 1' -f\n"));
+	CHECK(has(&o, "complete -c 'pkg' -n '__pkg_at 2 2' -f\n"));
+	CHECK(has(&o, "complete -c 'pkg' -n '__pkg_at 5 0 0' -f "
+		      "-a '(__fish_complete_directories)'\n"));
+	CHECK(!has(&o, "__pkg_at 4 "));
+	CHECK(has(&o, "\tcase '0:-f' '0:--format'\n\t\treturn 0\n"));
+	CHECK(!has(&o, "'0:--when'"));
+	CHECK(has(&o, "\t\t\tcase '0:repo' '0:r'\n\t\t\t\tset s 1\n"));
+}
+
+TEST(hidden_and_unsafe_items_are_skipped)
+{
+	static const unsigned sh[] = { ARG_SH_BASH, ARG_SH_ZSH, ARG_SH_FISH };
+	struct out o;
+	size_t i;
+
+	for (i = 0; i < ARG__COUNTOF(sh); i++) {
+		CHECK_INT(gen(rich, &rich_cfg, sh[i], &o), 0);
+		CHECK(!has(&o, "secret"));
+		CHECK(!has(&o, "Hidden"));
+		CHECK(!has(&o, "nuke"));
+		CHECK(!has(&o, "bad name"));
+		CHECK(!has(&o, "Unsafe"));
+		CHECK(!has(&o, "x y"));
+		CHECK(!has(&o, "second line"));
+		CHECK(has(&o, "quiet"));
+	}
+}
+
+static int noop(arg *a, const char *v)
+{
+	(void)a;
+	(void)v;
+	return 0;
+}
+
+static const arg_item odd[] = {
+	ARG_APP("odd.app", "Odd names",
+		ARG_FLAG(0, "c++", "C plus plus\tok"),
+		ARG_FLAG(0, "trail-", "Trailing dash"),
+		ARG_FLAG('x', NULL, "Short only, back\\slash [x]: y"),
+		ARG_FLAG(0, "a b", "Unsafe long only"),
+		ARG_FLAG('h', "hello", "Takes -h"),
+		ARG_STR('c', NULL, "Optional short", .optional_value = 1),
+		ARG_ON(0, "ping", noop, ""),
+		ARG_CUSTOM(0, "broken", &t_broken_wrap, "Broken wrapper"),
+		ARG_CUSTOM(0, "flag", &arg_t_bool, "Bool value"),
+		ARG_CMD("sub", run_ok, "Mixed",
+			ARG_ALIAS("s"),
+			{ .kind = ARG_I_ALIAS, .name = "hidden-alias",
+			  .hidden = 1 },
+			ARG_ALIAS("bad alias"),
+			ARG_CMD("leaf", run_ok, "Leaf",
+				ARG_FLAG(0, "help", "Own help")),
+			ARG_ARG_OPT("first", "First",
+				    .type = &arg_t_enum,
+				    .names = ARG_CHOICES("p", "q")),
+			ARG_ARG("second", "Second", .type = &arg_t_i64),
+			ARG_ARG("third", "Third", .hidden = 1)),
+		ARG_STR(0, "x y", "Unsafe value option"),
+		ARG_CMD("files", run_ok, "Mixed, files",
+			ARG_CMD("y", run_ok, "y"),
+			ARG_ARGS("f", "F")),
+		ARG_CMD("mixed", run_ok, "Mixed, words last",
+			ARG_CMD("x", run_ok, "x"),
+			ARG_ARGS("w", "W", .type = &arg_t_enum,
+				 .names = ARG_CHOICES("k"))))
+};
+
+static const arg_messages msgs = { .text = {
+	[ARG_MSG_HELP_FLAG] = "Hilfe" } };
+
+TEST(odd_names_and_quoting)
+{
+	arg_config cfg = ARG_CONFIG_INIT;
+	struct out o;
+
+	cfg.messages = &msgs;
+	CHECK_INT(gen(odd, &cfg, ARG_SH_ZSH, &o), 0);
+	CHECK(has(&o, "#compdef odd.app\n"));
+	CHECK(has(&o, "_odd_app_0()"));
+	CHECK(has(&o, "'(--c\\+\\+)--c\\+\\+[C plus plus ok]'"));
+	CHECK(has(&o, "'(--trail\\-)--trail\\-[Trailing dash]'"));
+	CHECK(has(&o, "'(-x)-x[Short only, back\\\\slash \\[x\\]\\: y]'"));
+	CHECK(!has(&o, "a b"));
+	CHECK(has(&o, "'(-h --hello)-h[Takes -h]'"));
+	CHECK(has(&o, "'(--help)--help[Hilfe]'"));
+	CHECK(has(&o, "'(-h --help)-h[Hilfe]'")); /* -h is not global */
+	CHECK(has(&o, "'(-c)-c-[Optional short]::TEXT:_files'"));
+	CHECK(has(&o, "'*--ping[]'"));
+	CHECK(has(&o, "'(--broken)--broken=[Broken wrapper]:W:_files'"));
+	CHECK(has(&o, "'(--flag)--flag=[Bool value]:BOOL: '") ||
+	      has(&o, "'(--flag)--flag=[Bool value]:"));
+	CHECK(!has(&o, "--version"));
+	/* mixed node: subcommands plus positionals */
+	CHECK(has(&o, "'s:Mixed'"));
+	CHECK(!has(&o, "hidden-alias"));
+	CHECK(!has(&o, "bad alias"));
+	CHECK(has(&o, "_describe -t commands command cmds && ret=0\n"
+		      "\t\tcompadd -- 'p' 'q' && ret=0\n"));
+	CHECK(has(&o, "\t\t*)\n\t\t\t:\n\t\t\t;;\n"));
+	CHECK(has(&o, "\t\t*)\n\t\t\tcompadd -- 'k' && ret=0\n"));
+	CHECK(has(&o, "\t\t_describe -t commands command cmds && ret=0\n"
+		      "\t\t_files && ret=0\n"));
+	CHECK(has(&o, "\t\t*)\n\t\t\t_files && ret=0\n"));
+	CHECK(has(&o, "_odd_app_2()\n{\n\t_arguments -s -S \\\n"
+		      "\t\t'(--help)--help[Own help]' \\\n"
+		      "\t\t'(-h)-h[Hilfe]'"));
+
+	CHECK_INT(gen(odd, &cfg, ARG_SH_BASH, &o), 0);
+	CHECK(has(&o, "complete -F _odd_app 'odd.app'\n"));
+	CHECK(has(&o, "opts='--c++ --trail- -x -h --hello -c --ping "
+		      "--broken --flag --help'"));
+	CHECK(has(&o, "'0:-c') va='=f' ;;"));
+	CHECK(has(&o, "'0:--broken') va='f' ;;"));
+	CHECK(has(&o, "'0:--flag') va='n' ;;"));
+	CHECK(has(&o, "'1:0') va='w:p q' ;;"));
+	CHECK(!has(&o, "'1:1')"));
+	CHECK(!has(&o, "'1:2')"));
+	CHECK(has(&o, "'5:'*) va='w:k' ;;"));
+	CHECK(has(&o, "'3:'*) va='f' ;;"));
+	CHECK(has(&o, "subs='leaf'"));
+	CHECK(has(&o, "subs='sub s files mixed'"));
+
+	CHECK_INT(gen(odd, &cfg, ARG_SH_FISH, &o), 0);
+	CHECK(has(&o, "-s 'x' -d 'Short only, back\\\\slash [x]: y'\n"));
+	CHECK(has(&o, "-l 'c++' -d 'C plus plus ok'\n"));
+	CHECK(has(&o, "-l 'ping'\n"));
+	CHECK(has(&o, "-s 'c' -d 'Optional short'\n"));
+	CHECK(has(&o, "-l 'help' -d 'Hilfe'\n"));
+	CHECK(has(&o, "complete -c 'odd.app' -n '__odd_app_at 1 0 0' -f "
+		      "-a 'p q'\n"));
+	CHECK(has(&o, "complete -c 'odd.app' -n '__odd_app_at 1 1 1' -f\n"));
+	CHECK(has(&o, "complete -c 'odd.app' -n '__odd_app_at 1 2 2' -f\n"));
+	CHECK(has(&o, "complete -c 'odd.app' -n '__odd_app_at 1 3' -f\n"));
+	CHECK(has(&o, "complete -c 'odd.app' -n '__odd_app_at 5 0' -f "
+		      "-a 'k'\n"));
+}
+
+TEST(no_auto_help)
+{
+	arg_config cfg = ARG_CONFIG_INIT;
+	struct out o;
+
+	cfg.style = ARG_NO_AUTO_HELP;
+	CHECK_INT(gen(small, &cfg, ARG_SH_BASH, &o), 0);
+	CHECK(!has(&o, "--help"));
+	CHECK(has(&o, "opts='-n --dry-run -m --mode'"));
+	CHECK(has(&o, "opts=''"));
+	CHECK_INT(gen(small, &cfg, ARG_SH_ZSH, &o), 0);
+	CHECK(has(&o, "_my_app_1()\n{\n\t_arguments -s -S \\\n"
+		      "\t\t':where:_files'\n}\n"));
+}
+
+TEST(deep_nesting_is_cut_at_max_depth)
+{
+	arg_item tree[ARG_MAX_DEPTH + 4][2];
+	char want[32];
+	struct out o;
+	size_t i;
+
+	memset(tree, 0, sizeof(tree));
+	for (i = 0; i < ARG__COUNTOF(tree); i++) {
+		tree[i][0].kind = ARG_I_CMD;
+		tree[i][0].name = i ? "c" : "deep";
+		tree[i][0].fn.run = run_ok;
+		tree[i][0].items =
+			i + 1 < ARG__COUNTOF(tree) ? tree[i + 1] : tree[i] + 1;
+		tree[i][1].kind = ARG_I_END;
+	}
+	CHECK_INT(gen(tree[0], NULL, ARG_SH_ZSH, &o), 0);
+	snprintf(want, sizeof(want), "_deep_%u()", (unsigned)ARG_MAX_DEPTH);
+	CHECK(has(&o, want));
+	snprintf(want, sizeof(want), "_deep_%u()",
+		 (unsigned)ARG_MAX_DEPTH + 1);
+	CHECK(!has(&o, want));
+	CHECK_INT(gen(tree[0], NULL, ARG_SH_BASH, &o), 0);
+	snprintf(want, sizeof(want), "s=%u\n", (unsigned)ARG_MAX_DEPTH);
+	CHECK(has(&o, want));
+	snprintf(want, sizeof(want), "s=%u\n", (unsigned)ARG_MAX_DEPTH + 1);
+	CHECK(!has(&o, want));
+}
+
+static const arg_item bad_root[] = {
+	ARG_APP("my app", "Unsafe program name")
+};
+
+static const arg_item no_name[] = {
+	ARG_APP(NULL, "No name")
+};
+
+static const arg_item not_cmd[] = {
+	ARG_FLAG('x', "x", "x"), ARG__END
+};
+
+TEST(invalid_arguments)
+{
+	static const unsigned bad_shells[] = {
+		0, ARG_SH_BASH | ARG_SH_ZSH, ARG_SH_ZSH | ARG_SH_FISH,
+		ARG_SH_BASH | ARG_SH_ZSH | ARG_SH_FISH, 0x8, 0x80000000u
+	};
+	struct out o;
+	arg p;
+	size_t i;
+
+	for (i = 0; i < ARG__COUNTOF(bad_shells); i++) {
+		CHECK_INT(gen(small, NULL, bad_shells[i], &o), -1);
+		CHECK_UINT(o.calls, 0);
+	}
+	CHECK_INT(gen(bad_root, NULL, ARG_SH_BASH, &o), -1);
+	CHECK_INT(gen(no_name, NULL, ARG_SH_FISH, &o), -1);
+	CHECK_INT(gen(not_cmd, NULL, ARG_SH_ZSH, &o), -1);
+	CHECK_INT(gen(NULL, NULL, ARG_SH_ZSH, &o), -1);
+	CHECK_UINT(o.calls, 0);
+	arg_init(&p, small, NULL);
+	CHECK_INT(arg_completion(NULL, ARG_SH_BASH, out_write, &o), -1);
+	CHECK_INT(arg_completion(&p, ARG_SH_BASH, NULL, &o), -1);
+}
+
+TEST(write_errors_propagate)
+{
+	static const unsigned sh[] = { ARG_SH_BASH, ARG_SH_ZSH, ARG_SH_FISH };
+	size_t limits[6] = { 1, 10, 300, 1000 };
+	struct out o;
+	arg p;
+	size_t i, j;
+	unsigned calls;
+
+	for (i = 0; i < ARG__COUNTOF(sh); i++) {
+		CHECK_INT(gen(rich, &rich_cfg, sh[i], &o), 0);
+		limits[4] = o.len / 2;
+		limits[5] = o.len - 1;
+		for (j = 0; j < ARG__COUNTOF(limits); j++) {
+			memset(&o, 0, sizeof(o));
+			o.limit = limits[j];
+			arg_init(&p, rich, &rich_cfg);
+			CHECK_INT(arg_completion(&p, sh[i], out_write, &o), 42);
+			/* nothing is written after the first failure */
+			calls = o.calls;
+			CHECK(o.len <= limits[j]);
+			CHECK(calls == o.len / 256 + 1);
+		}
+	}
+}
+
+TEST(works_after_parse_too)
+{
+	struct out a, b;
+	arg p;
+	char *argv[] = { "x", "repo", "add", "main", "1", NULL };
+
+	CHECK_INT(gen(rich, &rich_cfg, ARG_SH_FISH, &a), 0);
+	arg_init(&p, rich, &rich_cfg);
+	CHECK_INT(arg_parse(&p, 5, argv), ARG_OK);
+	memset(&b, 0, sizeof(b));
+	CHECK_INT(arg_completion(&p, ARG_SH_FISH, out_write, &b), 0);
+	CHECK_STR(a.data, b.data);
+	arg_free(&p);
+}
+
+static void dump(const char *dir, const char *name, const struct out *o)
+{
+	char path[1024];
+	FILE *f;
+
+	snprintf(path, sizeof(path), "%s/%s", dir, name);
+	f = fopen(path, "w");
+	if (!f)
+		return;
+	fwrite(o->data, 1, o->len, f);
+	fclose(f);
+}
+
+TEST(write_scripts_for_ci)
+{
+	static const struct {
+		const arg_item *spec;
+		unsigned sh;
+		const char *file;
+	} shells[] = { { rich, ARG_SH_BASH, "bash.sh" },
+		       { rich, ARG_SH_ZSH, "zsh.zsh" },
+		       { rich, ARG_SH_FISH, "fish.fish" },
+		       { odd, ARG_SH_BASH, "odd-bash.sh" },
+		       { odd, ARG_SH_ZSH, "odd-zsh.zsh" },
+		       { odd, ARG_SH_FISH, "odd-fish.fish" } };
+	const char *dir = getenv("ARG_COMPLETION_OUT_DIR");
+	struct out o;
+	size_t i;
+
+	for (i = 0; i < ARG__COUNTOF(shells); i++) {
+		CHECK_INT(gen(shells[i].spec, &rich_cfg, shells[i].sh, &o), 0);
+		CHECK(o.len > 0);
+		if (dir && *dir)
+			dump(dir, shells[i].file, &o);
+	}
+}
+
+TEST_MAIN(TEST_CASE(golden_bash), TEST_CASE(golden_zsh),
+	  TEST_CASE(golden_fish), TEST_CASE(rich_structure),
+	  TEST_CASE(hidden_and_unsafe_items_are_skipped),
+	  TEST_CASE(odd_names_and_quoting), TEST_CASE(no_auto_help),
+	  TEST_CASE(deep_nesting_is_cut_at_max_depth),
+	  TEST_CASE(invalid_arguments), TEST_CASE(write_errors_propagate),
+	  TEST_CASE(works_after_parse_too),
+	  TEST_CASE(write_scripts_for_ci))
