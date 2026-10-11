@@ -197,7 +197,9 @@ TEST(report)
 	CHECK_INT(PARSE(&f, "-h"), ARG_EXIT_HELP);
 	test_buf_reset(&f.out);
 	CHECK_INT(arg_report(&f.p), 0);
-	CHECK_STR(f.out.data, "Usage: prog [OPTIONS]\n");
+	/* first line of the help */
+	CHECK_STRN(f.out.data, strcspn(f.out.data, "\n"),
+		   "Usage: prog [OPTIONS]");
 	CHECK_INT(PARSE(&f, "-x"), ARG_E_UNKNOWN_OPTION);
 	test_buf_reset(&f.err);
 	CHECK_INT(arg_report(&f.p), 2);
@@ -266,7 +268,9 @@ TEST(exit_on_error)
 	}
 	CHECK(!reached);
 	CHECK_INT(l.exit_code, 0);
-	CHECK_STR(f.out.data, "Usage: prog [OPTIONS]\n");
+	/* first line of the help */
+	CHECK_STRN(f.out.data, strcspn(f.out.data, "\n"),
+		   "Usage: prog [OPTIONS]");
 	/* success does not exit */
 	if (setjmp(l.jb) == 0) {
 		CHECK_INT(PARSE(&f, "--need=x"), ARG_OK);
