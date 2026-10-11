@@ -354,7 +354,7 @@ TEST(help_render_path)
 	CHECK_STRN(f.out.data, strcspn(f.out.data, "\n"),
 		   "Usage: prog [OPTIONS] <COMMAND>");
 	CHECK_INT(arg_help(&f.p, "repo nope", fx_out, &f), -1);
-	CHECK_INT(arg_completion(&f.p, ARG_SH_BASH, fx_out, &f), -1);
+	CHECK_INT(arg_completion(&f.p, 0, fx_out, &f), -1);
 }
 
 static int custom_help(arg *a, const arg_item *cmd, arg_write_fn w, void *ud)
