@@ -78,3 +78,51 @@ unsigned arg__distance(const char *a, size_t an, const char *b, size_t bn,
 	}
 	return prev[bn] > max ? over(max) : prev[bn];
 }
+
+void arg__suggest_init(struct arg__suggester *s, const char *input, size_t n,
+		       arg_suggest_fn metric)
+{
+	ARG_ASSERT(s != NULL);
+	s->input = input;
+	s->input_len = n;
+	s->metric = metric ? metric : arg__distance;
+	if (n <= 3)
+		s->limit = 1;
+	else if (n <= 6)
+		s->limit = 2;
+	else
+		s->limit = 3;
+	s->best_dist = s->limit + 1;
+	s->best = NULL;
+}
+
+void arg__suggest_add(struct arg__suggester *s, const char *cand)
+{
+	size_t cn;
+	unsigned d;
+
+	ARG_ASSERT(s != NULL);
+	if (cand == NULL || cand[0] == '\0')
+		return;
+	cn = strlen(cand);
+	d = s->metric(s->input, s->input_len, cand, cn, s->limit);
+	/*
+	 * "--verb" for "--verbose": a typed prefix of at least three
+	 * bytes counts as a match at the limit, so a real typo with a
+	 * smaller distance still wins.
+	 */
+	if (s->input_len >= 3 && s->input_len < cn && d > s->limit &&
+	    memcmp(s->input, cand, s->input_len) == 0)
+		d = s->limit;
+	/* Strictly less: among equals the first candidate offered wins. */
+	if (d < s->best_dist) {
+		s->best_dist = d;
+		s->best = cand;
+	}
+}
+
+const char *arg__suggest_best(const struct arg__suggester *s)
+{
+	ARG_ASSERT(s != NULL);
+	return s->best;
+}
