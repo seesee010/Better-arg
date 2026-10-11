@@ -255,7 +255,8 @@ TEST(structure)
 	const arg_item ok[] = { ARG_APP(
 		"t", "T", ARG_CMD("g", NULL, "", ARG_MAIN(run)),
 		ARG_CMD("n", ARG_NO_HANDLER, ""), ARG_GROUP("G"),
-		ARG_EXAMPLE("t g", "G"), ARG_MUTEX("a", "b"), ARG_ALIAS("x")) };
+		ARG_EXAMPLE("t g", "G"), ARG_FLAG(0, "a", ""),
+		ARG_FLAG(0, "b", ""), ARG_MUTEX("a", "b"), ARG_ALIAS("x")) };
 
 	CHECK_INT(arg_compile(ok, NULL, NULL), ARG_OK);
 	EXPECT(a, "positional without a name", &a[0].items[0]);
