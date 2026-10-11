@@ -1,0 +1,15 @@
+/build*/
+/out/
+/.cache/
+compile_commands.json
+*.o
+*.a
+*.so
+*.dylib
+*.gcda
+*.gcno
+*.gcov
+coverage*.html
+coverage*.css
+.vscode/
+.idea/
