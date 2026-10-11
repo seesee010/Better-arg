@@ -124,6 +124,8 @@ TEST(typed_values)
 	CHECK_UINT(arg_uint(&f.p, "timeout"), 90000);
 	CHECK_INT(arg_enum(&f.p, "format"), 1);
 	CHECK_INT(arg_int(&f.p, "format"), 1);
+	CHECK_STR(arg_str(&f.p, "format"), "jpg");
+	CHECK_STR(arg_str_at(&f.p, "format", 1), NULL);
 	CHECK_INT(arg_int(&f.p, "small"), -7);
 	CHECK(arg_get(&f.p, "small", &small));
 	CHECK_INT(small, -7);

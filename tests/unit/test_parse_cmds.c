@@ -172,9 +172,13 @@ TEST(grouping_command)
 	fx_start(&f);
 	CHECK_INT(PARSE(&f, "repo"), ARG_E_MISSING_COMMAND);
 	CHECK(fx_error(&f)->cmd == &repo_tree[0]);
-	CHECK_STR(fx_report(&f),
-		  "prog repo: missing command\n"
-		  "Try 'prog repo --help' for more information.\n");
+	/* the error line, a blank line, then the help of "repo" (SDD 9.1) */
+	fx_report(&f);
+	CHECK_STRN(f.err.data, strlen("prog repo: missing command\n\n"),
+		   "prog repo: missing command\n\n");
+	CHECK(strstr(f.err.data, "\nUsage: prog repo ") != NULL);
+	CHECK(strstr(f.err.data, "Try 'prog") == NULL);
+	CHECK_STR(f.out.data, "");
 	CHECK_INT(arg_run(&f.p), 2);
 	CHECK(r.ran == NULL);
 	CHECK_INT(PARSE(&f, "repo", "key"), ARG_E_MISSING_COMMAND);
