@@ -133,6 +133,19 @@ See 'pkg <command> --help' for more.
 Handlers read values by name, including global options of parent commands:
 `arg_flag(a, "verbose")`, `arg_str(a, "root")`, `arg_str_at(a, "name", i)`.
 
+## 🐚 Shell completion
+
+The same spec produces completion scripts for bash, zsh and fish:
+
+```c
+static int to_file(void *ud, const char *s, size_t n)
+{
+	return fwrite(s, 1, n, ud) == n ? 0 : -1;
+}
+
+arg_completion(&p, ARG_SH_BASH, to_file, stdout); /* or ARG_SH_ZSH, ARG_SH_FISH */
+```
+
 ## 🧱 Three levels
 
 | Level | What you write | When |
