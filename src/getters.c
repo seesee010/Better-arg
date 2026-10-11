@@ -183,15 +183,36 @@ double arg_double(arg *a, const char *key)
 	return arg_double_at(a, key, 0);
 }
 
+/* The word an ARG_ENUM value stands for, or NULL. */
+static const char *enum_word(const struct found *f, const void *src)
+{
+	const char *const *names = f->s->item->names;
+	int idx = -1, n;
+
+	if (!src || !names)
+		return NULL;
+	memcpy(&idx, src, sizeof(idx));
+	for (n = 0; names[n]; n++)
+		if (n == idx)
+			return names[n];
+	return NULL;
+}
+
 const char *arg_str_at(arg *a, const char *key, size_t i)
 {
 	struct found f;
+	const arg_type *t;
 	const void *src;
 	const char *s = NULL;
 
-	if (!lookup(a, key, &f) || !typed(a, key, &f, K(ARG_K_STR)))
+	if (!lookup(a, key, &f))
+		return NULL;
+	t = typed(a, key, &f, K(ARG_K_STR) | K(ARG_K_ENUM));
+	if (!t)
 		return NULL;
 	src = arg__state_value(f.s, i);
+	if (t->kind == ARG_K_ENUM)
+		return enum_word(&f, src);
 	if (src)
 		memcpy(&s, src, sizeof(s));
 	return s;
