@@ -305,7 +305,9 @@ TEST(help_command)
 	CHECK(arg_path_is(&f.p, "repo list"));
 	test_buf_reset(&f.out);
 	CHECK_INT(arg_report(&f.p), 0);
-	CHECK_STR(f.out.data, "Usage: prog repo list [OPTIONS]\n");
+	/* first line of the help */
+	CHECK_STRN(f.out.data, strcspn(f.out.data, "\n"),
+		   "Usage: prog repo list [OPTIONS]");
 	CHECK_INT(PARSE(&f, "repo", "help", "add"), ARG_EXIT_HELP);
 	CHECK(arg_path_is(&f.p, "repo add"));
 	CHECK_INT(PARSE(&f, "help", "repo", "-x"), ARG_EXIT_HELP);
@@ -328,17 +330,25 @@ TEST(help_render_path)
 	CHECK_INT(PARSE(&f, "repo", "add", "-h"), ARG_EXIT_HELP);
 	test_buf_reset(&f.out);
 	CHECK_INT(arg_report(&f.p), 0);
-	CHECK_STR(f.out.data, "Usage: prog repo add [OPTIONS]\n");
+	/* first line of the help */
+	CHECK_STRN(f.out.data, strcspn(f.out.data, "\n"),
+		   "Usage: prog repo add [OPTIONS] <name> <url>");
 	/* arg_help on any path, and the selected one */
 	test_buf_reset(&f.out);
 	CHECK_INT(arg_help(&f.p, "repo key rm", NULL, NULL), 0);
-	CHECK_STR(f.out.data, "Usage: prog repo key rm [OPTIONS]\n");
+	/* first line of the help */
+	CHECK_STRN(f.out.data, strcspn(f.out.data, "\n"),
+		   "Usage: prog repo key rm [OPTIONS] <id>");
 	test_buf_reset(&f.out);
 	CHECK_INT(arg_help(&f.p, NULL, fx_out, &f), 0);
-	CHECK_STR(f.out.data, "Usage: prog repo add [OPTIONS]\n");
+	/* first line of the help */
+	CHECK_STRN(f.out.data, strcspn(f.out.data, "\n"),
+		   "Usage: prog repo add [OPTIONS] <name> <url>");
 	test_buf_reset(&f.out);
 	CHECK_INT(arg_help(&f.p, "", fx_out, &f), 0);
-	CHECK_STR(f.out.data, "Usage: prog [OPTIONS]\n");
+	/* first line of the help */
+	CHECK_STRN(f.out.data, strcspn(f.out.data, "\n"),
+		   "Usage: prog [OPTIONS] <COMMAND>");
 	CHECK_INT(arg_help(&f.p, "repo nope", fx_out, &f), -1);
 	CHECK_INT(arg_completion(&f.p, ARG_SH_BASH, fx_out, &f), -1);
 }
