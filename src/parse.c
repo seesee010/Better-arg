@@ -1105,6 +1105,41 @@ static const arg_item *selected(const struct arg__priv *v)
 	return v->depth ? v->cmds[v->depth - 1] : v->root;
 }
 
+static int render_help(arg *p, arg_write_fn w)
+{
+	struct arg__priv *v = arg__priv(p);
+	const arg_config *c = &v->cfg;
+
+	if (c->render_help)
+		return c->render_help(p, selected(v), w, c->io_ud);
+	return arg__render_help(p, selected(v), w, c->io_ud);
+}
+
+/*
+ * A grouping command reached without a subcommand prints its help to
+ * the error stream and fails with exit code 2 (SDD 9.1):
+ *
+ *	pkg repo: missing command
+ *
+ *	Usage: pkg repo [OPTIONS] <COMMAND>
+ *	...
+ */
+static void report_missing_command(arg *p)
+{
+	struct arg__priv *v = arg__priv(p);
+	const arg_config *c = &v->cfg;
+	const char *msg = arg__msg(c->messages, ARG_MSG_MISSING_COMMAND);
+	struct arg__path path;
+
+	arg__selected_path(p, &path);
+	if (arg__write_path(c->write_err, c->io_ud, &path) ||
+	    c->write_err(c->io_ud, ": ", 2) ||
+	    c->write_err(c->io_ud, msg, strlen(msg)) ||
+	    c->write_err(c->io_ud, "\n\n", 2))
+		return;
+	render_help(p, c->write_err);
+}
+
 int arg_report(arg *p)
 {
 	struct arg__priv *v = arg__priv(p);
@@ -1115,11 +1150,7 @@ int arg_report(arg *p)
 	case ARG_OK:
 		return 0;
 	case ARG_EXIT_HELP:
-		if (c->render_help)
-			c->render_help(p, selected(v), c->write_out, c->io_ud);
-		else
-			arg__render_help(p, selected(v), c->write_out,
-					 c->io_ud);
+		render_help(p, c->write_out);
 		return 0;
 	case ARG_EXIT_VERSION:
 		if (c->version_text &&
@@ -1132,6 +1163,10 @@ int arg_report(arg *p)
 	}
 	if (c->on_error)
 		return c->on_error(p, &v->err);
+	if (v->status == ARG_E_MISSING_COMMAND) {
+		report_missing_command(p);
+		return arg_exit_code(v->status);
+	}
 	arg__selected_path(p, &path);
 	arg__write_error(c->write_err, c->io_ud, &v->err, &path, c->messages);
 	return arg_exit_code(v->status);
