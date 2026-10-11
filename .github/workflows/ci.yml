@@ -39,6 +39,91 @@ jobs:
         run: cmake --build build --parallel
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
+      - name: Completion scripts in real shells
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zsh fish
+          out="$RUNNER_TEMP/completion"
+          mkdir -p "$out/play/sub.d"
+          touch "$out/play/file1.txt"
+          ARG_COMPLETION_OUT_DIR="$out" build/tests/test_complete
+          for f in "$out"/*.sh; do bash -n "$f"; done
+          for f in "$out"/*.zsh; do zsh -n "$f"; done
+          for f in "$out"/*.fish; do fish -n "$f"; done
+          cd "$out/play"
+          # bash: simulate completions with COMP_WORDS / COMP_CWORD
+          cat > ../sim.bash <<'EOF'
+          source "$1"
+          fail=0 n=0
+          t() {
+          	local want="$1"; shift
+          	n=$((n + 1))
+          	COMP_WORDS=("$@")
+          	COMP_CWORD=$((${#COMP_WORDS[@]} - 1))
+          	COMPREPLY=()
+          	_pkg
+          	local got="${COMPREPLY[*]}"
+          	if [[ "$got" != "$want" ]]; then
+          		echo "FAIL: '$*' -> '$got' (want '$want')"
+          		fail=1
+          	fi
+          }
+          t "repo r" pkg r
+          t "add" pkg repo a
+          t "list ls" pkg r l
+          t "--all" pkg -v r ls --a
+          t "--verbose --version" pkg repo add --ver
+          t "json yaml" pkg -f ""
+          t "yaml" pkg -vf y
+          t "main extra" pkg repo add ""
+          t "" pkg repo add main ""
+          t "sub.d" pkg build s
+          t "file1.txt" pkg install -o f
+          t "sub.d" pkg --workdir s
+          t "yaml" pkg --format = y
+          t "--format=json" pkg --format=j
+          t "--when=now" pkg --when=n
+          t "" pkg -j ""
+          t "install" pkg -C x ins
+          t "--no-color" pkg --no
+          echo "bash: $n completions checked, fail=$fail"
+          exit $fail
+          EOF
+          bash ../sim.bash ../bash.sh
+          # fish: ask fish itself for the candidates
+          cat > ../sim.fish <<'EOF'
+          source $argv[1]
+          set -g fail 0
+          set -g n 0
+          function t
+          	set -g n (math $n + 1)
+          	set -l got (complete -C $argv[2] | string replace -r '\t.*' '' | sort | string join ' ')
+          	if test "$got" != "$argv[1]"
+          		echo "FAIL: '$argv[2]' -> '$got' (want '$argv[1]')"
+          		set -g fail 1
+          	end
+          end
+          t 'r repo' 'pkg r'
+          t 'add list ls' 'pkg repo '
+          t 'list ls' 'pkg r l'
+          t 'json yaml' 'pkg --format '
+          t 'json yaml' 'pkg -vf '
+          t 'extra main' 'pkg repo add '
+          t '' 'pkg repo add main '
+          t 'build install r repo' 'pkg -C x '
+          t '--no-color' 'pkg --no'
+          t '--all' 'pkg repo ls --a'
+          t '--verbose' 'pkg -v repo ls --verb'
+          t 'file1.txt sub.d/' 'pkg install '
+          echo "fish: $n completions checked, fail=$fail"
+          exit $fail
+          EOF
+          fish ../sim.fish ../fish.fish
+          # zsh: the script loads and defines its functions
+          zsh -fc 'autoload -U compinit && compinit -u -D &&
+            source ../zsh.zsh && (( $+functions[_pkg_5] ))' &&
+            echo "zsh: script loads"
       - name: Install
         run: cmake --install build --prefix "$RUNNER_TEMP/prefix"
 
